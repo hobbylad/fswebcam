@@ -28,6 +28,7 @@
 #include "dec.h"
 #include "effects.h"
 #include "parse.h"
+#include "motion.h"
 
 #define ALIGN_LEFT   (0)
 #define ALIGN_CENTER (1)
@@ -172,7 +173,8 @@ typedef struct {
 	char *filename;
 	char format;
 	char compression;
-	
+
+	motion_t motion;
 } fswebcam_config_t;
 
 volatile char received_sigusr1 = 0;
@@ -694,6 +696,21 @@ int fswc_grab(fswebcam_config_t *config)
 		return(-1);
 	}
 	
+	/* Detect zone motion. */
+	if (config->motion.zones != 0)
+	{
+	   HEAD("--- Detect motion...");
+
+           config->motion.width 	= config->width;
+	   config->motion.height 	= config->height;
+
+      	   if (motion_detect(&config->motion, abitmap) <= 0)
+           {
+	     free(abitmap);
+             return (0);
+	   }
+	}
+
 	HEAD("--- Processing captured image...");
 	
 	/* Copy the average bitmap image to a gdImage. */
@@ -1082,20 +1099,30 @@ int fswc_usage()
 	       " -v, --verbose                Displays extra messages while capturing\n"
 	       "     --version                Displays the version and exits.\n"
 	       " -l, --loop <seconds>         Run in loop mode.\n"
+	       "     --offset <seconds>       Sets the capture time offset in loop mode.\n"
 	       " -b, --background             Run in the background.\n"
+	       "     --pid <filename>         Saves background process PID to filename.\n"
+	       " -L, --log [file/syslog:]<filename> Redirect log messages to a file or syslog.\n"
 	       " -o, --output <filename>      Output the log to a file.\n"
 	       " -d, --device <name>          Sets the source to use.\n"
 	       " -i, --input <number/name>    Selects the input to use.\n"
+	       "     --list-inputs            Displays available inputs.\n"
 	       " -t, --tuner <number>         Selects the tuner to use.\n"
+	       "     --list-tuners            Displays available tuners.\n"
 	       " -f, --frequency <number>     Selects the frequency use.\n"
 	       " -p, --palette <name>         Selects the palette format to use.\n"
 	       " -D, --delay <number>         Sets the pre-capture delay time. (seconds)\n"
 	       " -r, --resolution <size>      Sets the capture resolution.\n"
 	       "     --fps <framerate>        Sets the capture frame rate.\n"
+	       "     --list-framesizes        Displays the available frame sizes.\n"
+	       "     --list-framerates        Displays the available frame rates.\n"
 	       " -F, --frames <number>        Sets the number of frames to capture.\n"
 	       " -S, --skip <number>          Sets the number of frames to skip.\n"
 	       "     --dumpframe <filename>   Dump a raw frame to file.\n"
+	       " -R, --read                   Use read() to capture images.\n"
+	       "     --list-formats           Displays the available capture formats.\n"
 	       " -s, --set <name>=<value>     Sets a control value.\n"
+	       "     --list-controls          Displays the available controls.\n"
 	       "     --revert                 Restores original captured image.\n"
 	       "     --flip <direction>       Flips the image. (h, v)\n"
 	       "     --crop <size>[,<offset>] Crop a part of the image.\n"
@@ -1128,7 +1155,7 @@ int fswc_usage()
 	       "     --overlay <PNG image>    Sets the overlay image.\n"
 	       "     --no-overlay             Clears the overlay.\n"
 	       "     --jpeg <factor>          Outputs a JPEG image. (-1, 0 - 95)\n"
-	       "     --png <factor>           Outputs a PNG image. (-1, 0 - 10)\n"
+	       "     --png <factor>           Outputs a PNG image. (-1, 0 - 9)\n"
 	       "     --save <filename>        Save image to file.\n"
 	       "     --exec <command>         Execute a command and wait for it to complete.\n"
 	       "\n");
@@ -1374,6 +1401,7 @@ int fswc_getopts(fswebcam_config_t *config, int argc, char *argv[])
 		{"png",             required_argument, 0, OPT_PNG},
 		{"save",            required_argument, 0, OPT_SAVE},
 		{"exec",            required_argument, 0, OPT_EXEC},
+		{"zone", 	    required_argument, 0, 'z'},
 		{0, 0, 0, 0}
 	};
 	char *opts = "-qc:vl:bL:d:i:t:f:D:r:F:s:S:p:R";
@@ -1523,6 +1551,16 @@ int fswc_getopts(fswebcam_config_t *config, int argc, char *argv[])
 			free(config->dumpframe);
 			config->dumpframe = strdup(optarg);
 			break;
+			
+		case 'z':
+		   motion_addzone(&config->motion, 
+	                argtol(optarg, ", ", 0, 0, 10), 
+	                argtol(optarg, ", ", 1, 0, 10), 
+	                argtol(optarg, ", ", 2, 0, 10), 
+	                argtol(optarg, ", ", 3, 0, 10), 
+	                argtol(optarg, ", ", 4, 0, 10));
+			break;
+
 		default:
 			/* All other options are added to the job queue. */
 			fswc_add_job(config, c, optarg);
@@ -1590,6 +1628,8 @@ int main(int argc, char *argv[])
 		return(-1);
 	}
 	
+	motion_init(&config->motion);
+
 	/* Set defaults and parse the command line. */
 	if(fswc_getopts(config, argc, argv)) return(-1);
 	
@@ -1641,6 +1681,10 @@ int main(int argc, char *argv[])
 					/* Reload configuration. */
 					MSG("Received HUP signal... reloading configuration.");
 					fswc_free_config(config);
+					
+					motion_free(&config->motion);
+					motion_init(&config->motion);
+
 					fswc_getopts(config, argc, argv);
 					
 					/* Clear hup signal. */
@@ -1674,6 +1718,7 @@ int main(int argc, char *argv[])
 	if(config->logfile) log_close();
 	
 	/* Free all used memory. */
+    motion_free(&config->motion);
 	fswc_free_config(config);
 	free(config);
 	
